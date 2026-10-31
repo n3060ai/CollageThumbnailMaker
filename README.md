@@ -1,0 +1,2 @@
+# CollageThumbnailMaker
+Collage Thumbnail Maker

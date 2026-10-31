@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>コラージュサムネ作成</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);--bg:#fff;--fg:#1a1a1a;--card:#f0f0f4;--ac:#3b6ef5;--bd:#d0d0d8}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#16161a;--fg:#eee;--card:#25252b;--ac:#7c9cff;--bd:#3a3a44}}
+:root[data-theme="dark"]{--bg:#16161a;--fg:#eee;--card:#25252b;--ac:#7c9cff;--bd:#3a3a44}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,"Hiragino Sans",sans-serif;padding:16px;max-width:760px;margin-inline:auto}
+h1{font-size:18px;margin:0 0 12px}
+#drop{border:2px dashed var(--bd);border-radius:14px;padding:24px 12px;text-align:center;background:var(--card)}
+#drop.on{border-color:var(--ac)}
+button,select{font:inherit;color:var(--fg);background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:6px 10px}
+button.p{background:var(--ac);color:#fff;border:0}
+.row{display:flex;flex-wrap:wrap;gap:8px 14px;margin:10px 0;align-items:center}
+label{display:flex;gap:6px;align-items:center;font-size:13px}
+#out{width:100%;border-radius:8px;display:block;margin-top:8px;background:#000}
+.hint{font-size:12px;opacity:.7}
+#pv{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:8px 0}
+.pc{background:var(--card);border:2px solid transparent;border-radius:10px;padding:4px;text-align:center;font-size:12px;cursor:pointer}
+.pc.sel{border-color:var(--ac)}
+.pc canvas{width:100%;height:110px;object-fit:contain;display:block;border-radius:6px;background:#000}
+</style></head><body>
+<h1>コラージュサムネ作成</h1>
+<div id="drop">
+  <div>画像フォルダ(または画像)をここにドロップ</div>
+  <div class="row" style="justify-content:center">
+    <button id="bf">フォルダを選択</button>
+    <button id="bi">画像を選択</button>
+  </div>
+  <div class="hint" id="cnt">未選択(画像は端末内で処理され、アップロードされません)</div>
+</div>
+<input id="fd" type="file" webkitdirectory hidden>
+<input id="fi" type="file" accept="image/*" multiple hidden>
+
+<div class="hint" style="margin-top:12px">パターン(タップで選択)</div>
+<div id="pv"></div>
+
+<div class="row">
+  <label>メイン<select id="main"></select></label>
+  <label>形<select id="asp"><option value="1">1:1(pixiv等)</option><option value="1.25">4:5(縦)</option><option value="1.333">3:4(縦)</option><option value="1.778">9:16(縦)</option><option value="0.75">4:3(横)</option><option value="0.5625">16:9(横)</option></select></label>
+  <label>出力幅<select id="W"><option value="1200">1200px</option><option value="1600">1600px</option><option value="2400">2400px</option></select></label>
+  <label>列数/密度<select id="C"><option>3</option><option>4</option><option selected>5</option><option>6</option></select></label>
+  <label>大画像の位置<select id="corner"><option value="br">右下</option><option value="bl">左下</option><option value="tr">右上</option><option value="tl">左上</option><option value="c">中央</option></select></label>
+</div>
+<div class="row">
+  <label>使う枚数<input id="count" type="range" min="1" max="40" value="20"><span id="cv_n">20</span></label>
+  <label>隙間<input id="gap" type="range" min="0" max="16" value="5"></label>
+  <label>上寄せ<input id="top" type="range" min="0" max="100" value="25"></label>
+  <label><input id="badge" type="checkbox" checked>枚数バッジ</label>
+</div>
+<div class="row">
+  <button class="p" id="shuf">シャッフル</button>
+  <a id="dl" download="collage.jpg"><button>ダウンロード</button></a>
+</div>
+<div class="hint">「大+小」「中央」系は枚数が自動決定(列数で変わります)。スマホは下の画像を長押しで保存。</div>
+<img id="out" alt="">
+<p class="hint" style="margin-top:16px">このツールはHTML1ファイルで完結しています。ローカルに.htmlとして保存すれば、ネット接続なしでも使えます。画像は端末内で処理され、外部には送信されません。「元の比率で敷詰」は元画像の比率を使うので、形の設定は反映されません。</p>
+
+<script>
+const $=id=>document.getElementById(id);
+let files=[],seed=1,cache=new Map(),busy=false,again=false,preset=0;
+const isImg=f=>/^image\//.test(f.type)||/\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(f.name);
+const SP={3:2,4:3,5:3,6:4};
+const PRESETS=[
+ {n:'大+小(少)',layout:'hero',C:3,corner:'br'},
+ {n:'大+小(多)',layout:'hero',C:6,corner:'tl'},
+ {n:'中央ヒーロー',layout:'hero',C:5,corner:'c'},
+ {n:'均等グリッド',layout:'uniform',C:5,corner:'br'},
+ {n:'元の比率で敷詰',layout:'just',C:4,corner:'br'},
+ {n:'ランダム分割',layout:'bsp',C:4,corner:'br'}];
+
+async function walk(entry,out){
+  if(entry.isFile){await new Promise(r=>entry.file(f=>{out.push(f);r()},r))}
+  else if(entry.isDirectory){
+    const rd=entry.createReader();
+    for(;;){
+      const list=await new Promise(r=>rd.readEntries(r,()=>r([])));
+      if(!list.length)break;
+      for(const e of list)await walk(e,out);
+    }
+  }
+}
+function setFiles(list){
+  files=list.filter(isImg).sort((a,b)=>a.name.localeCompare(b.name,'ja',{numeric:true}));
+  cache.clear();
+  $('cnt').textContent=files.length?files.length+' 枚読み込み':'画像が見つかりません';
+  $('main').innerHTML=files.map((f,i)=>`<option value="${i}">${i+1}. ${f.name.replace(/[<&]/g,'')}</option>`).join('');
+  const c=$('count');c.max=Math.max(1,files.length);c.value=Math.min(20,files.length);
+  renderAll();
+}
+const drop=$('drop');
+['dragenter','dragover'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('on')}));
+['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('on')}));
+drop.addEventListener('drop',async ev=>{
+  const out=[];
+  const items=[...(ev.dataTransfer.items||[])].map(i=>i.webkitGetAsEntry&&i.webkitGetAsEntry()).filter(Boolean);
+  if(items.length){for(const e of items)await walk(e,out)}else out.push(...ev.dataTransfer.files);
+  setFiles(out);
+});
+$('bf').onclick=()=>$('fd').click();
+$('bi').onclick=()=>$('fi').click();
+$('fd').onchange=e=>setFiles([...e.target.files]);
+$('fi').onchange=e=>setFiles([...e.target.files]);
+$('shuf').onclick=()=>{seed=Math.random()*1e9|0;renderAll()};
+['main','asp','W','C','corner','count','gap','top','badge'].forEach(id=>$(id).addEventListener('input',()=>{$('cv_n').textContent=$('count').value;renderAll()}));
+
+// プリセット一覧
+$('pv').innerHTML=PRESETS.map((p,i)=>`<div class="pc" data-i="${i}"><canvas></canvas>${p.n}</div>`).join('');
+$('pv').addEventListener('click',e=>{
+  const el=e.target.closest('.pc');if(!el)return;
+  preset=+el.dataset.i;const p=PRESETS[preset];
+  $('C').value=p.C;$('corner').value=p.corner;renderAll();
+});
+
+function rng(s){return()=>{s|=0;s=s+0x6D2B79F5|0;let t=Math.imul(s^s>>>15,1|s);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+async function bmp(i){
+  if(!cache.has(i))cache.set(i,(async()=>{
+    try{
+      let b=await createImageBitmap(files[i]);
+      if(Math.max(b.width,b.height)>1400){
+        const s=await createImageBitmap(files[i],b.width>=b.height?{resizeWidth:1400,resizeQuality:'high'}:{resizeHeight:1400,resizeQuality:'high'});
+        b.close();b=s;
+      }
+      return b;
+    }catch{return null}
+  })());
+  return cache.get(i);
+}
+function cover(g,b,x,y,w,h,ty){
+  const s=Math.max(w/b.width,h/b.height),sw=w/s,sh=h/s;
+  g.drawImage(b,(b.width-sw)/2,(b.height-sh)*ty,sw,sh,x,y,w,h);
+}
+function pick(k,mainI){
+  const r=rng(seed),o=files.map((_,i)=>i).filter(i=>i!==mainI);
+  for(let i=o.length-1;i>0;i--){const j=r()*(i+1)|0;[o[i],o[j]]=[o[j],o[i]]}
+  const out=[mainI];
+  for(let i=0;out.length<k;i++)out.push(o.length?o[i%o.length]:mainI);
+  return out;
+}
+async function plan(o,W){
+  const mainI=Math.min(o.mainI,files.length-1),C=o.C,asp=o.asp;
+  let rects=[],H=W*asp;
+  if(o.layout==='hero'){
+    const span=SP[C],n=C*C-span*span+1,idx=pick(n,mainI),cw=W/C,ch=H/C;
+    let bc,br;
+    if(o.corner==='c'){bc=br=(C-span)>>1}
+    else{bc=o.corner[1]==='l'?0:C-span;br=o.corner[0]==='t'?0:C-span}
+    rects.push({x:bc*cw,y:br*ch,w:span*cw,h:span*ch,i:idx[0]});
+    let k=1;
+    for(let r=0;r<C;r++)for(let c=0;c<C;c++){
+      if(c>=bc&&c<bc+span&&r>=br&&r<br+span)continue;
+      rects.push({x:c*cw,y:r*ch,w:cw,h:ch,i:idx[k++]});
+    }
+  }else if(o.layout==='uniform'){
+    const rows=Math.ceil(o.count/C),idx=pick(rows*C,mainI),cw=W/C,ch=cw*asp;
+    H=rows*ch;
+    idx.forEach((i,k)=>rects.push({x:(k%C)*cw,y:Math.floor(k/C)*ch,w:cw,h:ch,i}));
+  }else if(o.layout==='bsp'){
+    const idx=pick(o.count,mainI),r=rng(seed+7);
+    let L=[{x:0,y:0,w:W,h:H}];
+    while(L.length<o.count){
+      L.sort((a,b)=>b.w*b.h-a.w*a.h);
+      const a=L.shift(),t=.35+r()*.3;
+      if(a.w>=a.h)L.push({x:a.x,y:a.y,w:a.w*t,h:a.h},{x:a.x+a.w*t,y:a.y,w:a.w*(1-t),h:a.h});
+      else L.push({x:a.x,y:a.y,w:a.w,h:a.h*t},{x:a.x,y:a.y+a.h*t,w:a.w,h:a.h*(1-t)});
+    }
+    L.sort((a,b)=>b.w*b.h-a.w*a.h);
+    rects=L.map((q,k)=>({...q,i:idx[k]}));
+  }else{ // just: 元の縦横比で敷き詰め
+    const idx=pick(o.count,mainI),rh=W*1.2/C,ar=[];
+    for(const i of idx){const b=await bmp(i);ar.push(b?b.width/b.height:1)}
+    let y=0,row=[],sum=0;
+    const flush=()=>{
+      if(!row.length)return;
+      const h=Math.min(W/sum,rh*1.4);let x=0;
+      for(const q of row){const w=q.a*h;rects.push({x,y,w,h,i:q.i});x+=w}
+      y+=h;row=[];sum=0;
+    };
+    idx.forEach((i,k)=>{row.push({i,a:ar[k]});sum+=ar[k];if(sum*rh>=W)flush()});
+    flush();H=y;
+  }
+  return{H,rects};
+}
+async function draw(cv,o,W){
+  const{H,rects}=await plan(o,W);
+  cv.width=W;cv.height=Math.max(1,Math.round(H));
+  const g=cv.getContext('2d'),gp=o.gap*W/1200/2;
+  g.fillStyle='#000';g.fillRect(0,0,cv.width,cv.height);
+  for(const r of rects){
+    const b=await bmp(r.i);
+    if(b)cover(g,b,r.x+gp,r.y+gp,r.w-2*gp,r.h-2*gp,o.ty);
+  }
+  if(o.badge){
+    const k=W/1200,t=String(rects.length),w=(84+t.length*14)*k,h=52*k,x=W-gp*2-w-14*k,y=gp*2+14*k;
+    g.fillStyle='rgba(60,60,60,.65)';g.beginPath();g.roundRect(x,y,w,h,12*k);g.fill();
+    g.strokeStyle='#fff';g.lineWidth=3*k;g.strokeRect(x+16*k,y+14*k,18*k,24*k);
+    g.fillStyle='#fff';g.font=`bold ${30*k}px sans-serif`;g.textBaseline='middle';g.fillText(t,x+46*k,y+h/2+k);
+  }
+}
+function opts(over){
+  return Object.assign({mainI:+$('main').value||0,asp:+$('asp').value,C:+$('C').value,corner:$('corner').value,
+    count:+$('count').value,gap:+$('gap').value,ty:$('top').value/100,badge:$('badge').checked,layout:PRESETS[preset].layout},over||{});
+}
+async function renderAll(){
+  if(!files.length)return;
+  if(busy){again=true;return}
+  busy=true;
+  const cv=document.createElement('canvas');
+  await draw(cv,opts(),+$('W').value);
+  const url=cv.toDataURL('image/jpeg',.92);
+  $('out').src=url;$('dl').href=url;
+  const cs=document.querySelectorAll('#pv canvas');
+  for(let i=0;i<PRESETS.length;i++){
+    const p=PRESETS[i];
+    await draw(cs[i],opts({layout:p.layout,C:p.C,corner:p.corner}),320);
+    cs[i].parentElement.classList.toggle('sel',i===preset);
+  }
+  busy=false;
+  if(again){again=false;renderAll()}
+}
+</script></body></html>
